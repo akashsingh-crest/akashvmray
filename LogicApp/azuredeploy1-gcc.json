@@ -1,0 +1,351 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "title": "Submit Microsoft Defender GCC EDR/AV Alerts to VMRay Function App",
+        "description": "This playbook polls the Defender GCC API for new alerts and submits matching ones to VMRay. Designed for GCC (not GCC High) tenants deployed on commercial Azure.",
+        "prerequisites": "VMRay Defender Function App",
+        "prerequisitesDeployTemplateFile": "../FunctionApp/azuredeploy.json",
+        "postDeploymentSteps": ["None"],
+        "lastUpdateTime": "2025-02-04T00:00:00.000Z",
+        "entities": [""],
+        "tags": [""],
+        "support": {
+            "tier": "community"
+        },
+        "author": {
+            "name": "VMRay"
+        }
+    },
+    "parameters": {
+        "PlaybookName": {
+            "defaultValue": "SubmitDefenderAlertsToVMRay-GCC",
+            "type": "string",
+            "metadata": {
+                "description": "Name of the Logic App/Playbook"
+            }
+        },
+        "FunctionAppName": {
+            "defaultValue": "VMRayDefender",
+            "type": "string",
+            "metadata": {
+                "description": "Name of the FunctionApp"
+            }
+        },
+        "AzureClientID": {
+            "type": "string",
+            "minLength": 1,
+            "metadata": {
+                "description": "Enter Azure Client Id that you have created during app registration."
+            }
+        },
+        "AzureClientSecret": {
+            "type": "securestring",
+            "minLength": 1,
+            "metadata": {
+                "description": "Enter Azure Client Secret that you have created during creating the client secret."
+            }
+        },
+        "AzureTenantID": {
+            "type": "string",
+            "minLength": 1,
+            "metadata": {
+                "description": "Enter Azure Tenant Id of your Azure Active Directory."
+            }
+        },
+        "PollingIntervalMinutes": {
+            "type": "int",
+            "defaultValue": 5,
+            "minValue": 1,
+            "maxValue": 60,
+            "metadata": {
+                "description": "How often (in minutes) the Logic App polls the GCC Defender API for new alerts."
+            }
+        }
+    },
+    "variables": {
+        "functionappName": "[concat(toLower(parameters('FunctionAppName')), take(uniqueString(resourceGroup().id), 3))]",
+        "DefenderAPIEndpointUrl": "https://api-gcc.securitycenter.microsoft.us"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2017-07-01",
+            "name": "[parameters('PlaybookName')]",
+            "location": "[resourceGroup().location]",
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "DefenderAlertSeverity": {
+                            "defaultValue": [
+                                "UnSpecified", "Informational", "Low", "Medium", "High"
+                            ],
+                            "type": "Array",
+                            "metadata": {
+                                "description": "Microsoft Defender for Endpoint Alert Severities used for filtering alerts"
+                            }
+                        },
+                        "DefenderAlertStatus": {
+                            "defaultValue": [
+                                "New", "InProgress"
+                            ],
+                            "type": "Array",
+                            "metadata": {
+                                "description": "Microsoft Defender for Endpoint Alert Statuses used for filtering alerts"
+                            }
+                        },
+                        "AzureClientID": {
+                            "type": "String"
+                        },
+                        "AzureClientSecret": {
+                            "type": "String"
+                        },
+                        "AzureTenantID": {
+                            "type": "String"
+                        },
+                        "DefenderAPIEndpoint": {
+                            "type": "String"
+                        },
+                        "PollingIntervalMinutes": {
+                            "type": "Int"
+                        }
+                    },
+                    "triggers": {
+                        "Polling_Trigger": {
+                            "type": "Recurrence",
+                            "recurrence": {
+                                "frequency": "Minute",
+                                "interval": "@parameters('PollingIntervalMinutes')"
+                            }
+                        }
+                    },
+                    "actions": {
+                        "Initialize_Alert_Status": {
+                            "runAfter": {},
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "alert_status",
+                                        "type": "array",
+                                        "value": "@parameters('DefenderAlertStatus')"
+                                    }
+                                ]
+                            }
+                        },
+                        "Initialize_Alert_Severity": {
+                            "runAfter": {},
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "alert_severity",
+                                        "type": "array",
+                                        "value": "@parameters('DefenderAlertSeverity')"
+                                    }
+                                ]
+                            }
+                        },
+                        "Calculate_Time_Window": {
+                            "runAfter": {},
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "time_window",
+                                        "type": "string",
+                                        "value": "@{addMinutes(utcNow(), -6, 'yyyy-MM-ddTHH:mm:ssZ')}"
+                                    }
+                                ]
+                            }
+                        },
+                        "Get_OAuth_Token": {
+                            "runAfter": {},
+                            "type": "Http",
+                            "inputs": {
+                                "method": "POST",
+                                "uri": "https://login.microsoftonline.com/@{parameters('AzureTenantID')}/oauth2/v2.0/token",
+                                "headers": {
+                                    "Content-Type": "application/x-www-form-urlencoded"
+                                },
+                                "body": "grant_type=client_credentials&client_id=@{encodeUriComponent(parameters('AzureClientID'))}&client_secret=@{encodeUriComponent(parameters('AzureClientSecret'))}&scope=@{encodeUriComponent(concat(parameters('DefenderAPIEndpoint'), '/.default'))}"
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs",
+                                        "outputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Parse_Token_Response": {
+                            "runAfter": {
+                                "Get_OAuth_Token": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "ParseJson",
+                            "inputs": {
+                                "content": "@body('Get_OAuth_Token')",
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "access_token": {
+                                            "type": "string"
+                                        },
+                                        "token_type": {
+                                            "type": "string"
+                                        },
+                                        "expires_in": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                }
+                            },
+                            "runtimeConfiguration": {
+                                "secureData": {
+                                    "properties": [
+                                        "inputs",
+                                        "outputs"
+                                    ]
+                                }
+                            }
+                        },
+                        "Get_Recent_Alerts": {
+                            "runAfter": {
+                                "Parse_Token_Response": [
+                                    "Succeeded"
+                                ],
+                                "Calculate_Time_Window": [
+                                    "Succeeded"
+                                ],
+                                "Initialize_Alert_Status": [
+                                    "Succeeded"
+                                ],
+                                "Initialize_Alert_Severity": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Http",
+                            "inputs": {
+                                "method": "GET",
+                                "uri": "@{parameters('DefenderAPIEndpoint')}/api/alerts",
+                                "headers": {
+                                    "Authorization": "Bearer @{body('Parse_Token_Response')?['access_token']}"
+                                },
+                                "queries": {
+                                    "$filter": "alertCreationTime gt @{variables('time_window')}",
+                                    "$orderby": "alertCreationTime desc"
+                                }
+                            }
+                        },
+                        "For_Each_Alert": {
+                            "runAfter": {
+                                "Get_Recent_Alerts": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Foreach",
+                            "foreach": "@body('Get_Recent_Alerts')?['value']",
+                            "actions": {
+                                "Check_if_the_alert_is_from_AV_or_EDR": {
+                                    "type": "If",
+                                    "expression": {
+                                        "or": [
+                                            {
+                                                "equals": [
+                                                    "@items('For_Each_Alert')?['detectionSource']",
+                                                    "WindowsDefenderAtp"
+                                                ]
+                                            },
+                                            {
+                                                "equals": [
+                                                    "@items('For_Each_Alert')?['detectionSource']",
+                                                    "WindowsDefenderAv"
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    "actions": {
+                                        "Check_Alert_Severity_And_Status": {
+                                            "type": "If",
+                                            "expression": {
+                                                "and": [
+                                                    {
+                                                        "contains": [
+                                                            "@variables('alert_severity')",
+                                                            "@items('For_Each_Alert')?['severity']"
+                                                        ]
+                                                    },
+                                                    {
+                                                        "contains": [
+                                                            "@variables('alert_status')",
+                                                            "@items('For_Each_Alert')?['status']"
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            "actions": {
+                                                "Call-VMRay-Function": {
+                                                    "limit": {
+                                                        "timeout": "PT5M"
+                                                    },
+                                                    "type": "Function",
+                                                    "inputs": {
+                                                        "body": {
+                                                            "alert": "@items('For_Each_Alert')",
+                                                            "threat_name": "@items('For_Each_Alert')?['threatName']",
+                                                            "detection_source": "@items('For_Each_Alert')?['detectionSource']",
+                                                            "threat_family": "@items('For_Each_Alert')?['threatFamilyName']"
+                                                        },
+                                                        "function": {
+                                                            "id": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Web/sites/', variables('functionappName'), '/functions/VMRayDefender')]"
+                                                        },
+                                                        "retryPolicy": {
+                                                            "type": "none"
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            "else": {
+                                                "actions": {}
+                                            }
+                                        }
+                                    },
+                                    "else": {
+                                        "actions": {}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {
+                    "AzureClientID": {
+                        "value": "[parameters('AzureClientID')]"
+                    },
+                    "AzureClientSecret": {
+                        "value": "[parameters('AzureClientSecret')]"
+                    },
+                    "AzureTenantID": {
+                        "value": "[parameters('AzureTenantID')]"
+                    },
+                    "DefenderAPIEndpoint": {
+                        "value": "[variables('DefenderAPIEndpointUrl')]"
+                    },
+                    "PollingIntervalMinutes": {
+                        "value": "[parameters('PollingIntervalMinutes')]"
+                    }
+                }
+            }
+        }
+    ]
+}

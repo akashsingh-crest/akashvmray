@@ -1,0 +1,216 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "logicAppName": {
+        "type": "string",
+        "defaultValue": "SubmitDefenderAlertsToVMRay-GCC-StandardPlan"
+      },
+    "AzureClientID": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Azure Client Id that you have created during app registration."
+      }
+    },
+    "AzureClientSecret": {
+      "type": "securestring",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Azure Client Secret that you have created during creating the client secret."
+      }
+    },
+    "AzureTenantID": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Azure Tenant Id of your Azure Active Directory."
+      }
+    },
+    "appServicePlanName": {
+      "type": "string",
+      "defaultValue": "VMRayLogicAppServicePlan"
+    },
+    "FunctionName": {
+      "defaultValue": "VMRayDefender",
+      "minLength": 1,
+      "type": "string"
+    },
+    "PollingIntervalMinutes": {
+      "type": "int",
+      "defaultValue": 5,
+      "minValue": 1,
+      "maxValue": 60,
+      "metadata": {
+        "description": "How often (in minutes) the Logic App polls the GCC Defender API for new alerts."
+      }
+    }
+  },
+  "variables": {
+        "storageAccountName": "[concat('vmraylogicapp', take(uniqueString(resourceGroup().id), 3))]",
+        "DefenderAPIEndpointUrl": "https://api-gcc.securitycenter.microsoft.us"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-03-01",
+      "name": "[parameters('appServicePlanName')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "WS1",
+        "tier": "WorkflowStandard"
+      },
+      "properties": {
+        "reserved": false,
+        "targetWorkerCount": 1,
+        "targetWorkerSizeId": 0
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "workflowapp,functionapp",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "siteConfig": {
+          "appSettings": [
+            {
+                "name": "APP_KIND",
+                "value": "workflowApp"
+              },
+              {
+                "name": "AzureFunctionsJobHost__extensionBundle__id",
+                "value": "Microsoft.Azure.Functions.ExtensionBundle.Workflows"
+              },
+              {
+                "name": "AzureFunctionsJobHost__extensionBundle__version",
+                "value": "[1.*, 2.0.0)"
+              },
+              {
+                "name": "AzureWebJobsStorage",
+                "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2022-09-01').keys[0].value, ';EndpointSuffix=core.windows.net')]"
+              },
+              {
+                "name": "FUNCTIONS_EXTENSION_VERSION",
+                "value": "~4"
+              },
+              {
+                "name": "FUNCTIONS_V2_COMPATIBILITY_MODE",
+                "value": "true"
+              },
+              {
+                "name": "AzureClientID",
+                "value": "[parameters('AzureClientID')]"
+              },
+              {
+                "name": "AzureClientSecret",
+                "value": "[parameters('AzureClientSecret')]"
+              },
+              {
+                "name": "AzureTenantID",
+                "value": "[parameters('AzureTenantID')]"
+              },
+              {
+                "name": "DefenderAPIEndpoint",
+                "value": "[variables('DefenderAPIEndpointUrl')]"
+              },
+              {
+                "name": "PollingIntervalMinutes",
+                "value": "[string(parameters('PollingIntervalMinutes'))]"
+              },
+              {
+                "name": "azureFunctionOperation_triggerUrl",
+                "value": "[concat('https://', parameters('FunctionName'), '.azurewebsites.net/api/VMRayDefender')]"
+              },
+              {
+                "name": "azureFunctionOperation_functionKey",
+                "value": ""
+              },
+              {
+                "name": "azureFunction_id",
+                "value": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Web/sites/', parameters('FunctionName'), '/VMRayDefender')]"
+              },
+              {
+                "name": "FUNCTIONS_WORKER_RUNTIME",
+                "value": "node"
+              },
+              {
+                "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
+                "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',concat(listKeys(concat(resourceGroup().id,'/providers/Microsoft.Storage/storageAccounts/', variables('storageAccountName')),'2019-06-01').keys[0].value),';EndpointSuffix=core.windows.net')]"
+              },
+              {
+                "name": "WEBSITE_CONTENTSHARE",
+                "value": "[concat(toLower(parameters('logicAppName')), '97b0')]"
+              },
+              {
+                "name": "WEBSITE_NODE_DEFAULT_VERSION",
+                "value": "~20"
+              },
+              {
+                "name": "WORKFLOWS_SUBSCRIPTION_ID",
+                "value": "[subscription().subscriptionId]"
+              },
+              {
+                "name": "WORKFLOWS_LOCATION_NAME",
+                "value": "[resourceGroup().location]"
+              },
+              {
+                "name": "RESOURCE_GROUP_NAME",
+                "value": "[resourceGroup().name]"
+              },
+              {
+                "name": "FUNCTION_APP_NAME",
+                "value": "[parameters('FunctionName')]"
+              }
+          ]
+        },
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]"
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites/extensions",
+      "apiVersion": "2022-03-01",
+      "name": "[concat(parameters('logicAppName'), '/zipdeploy')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('logicAppName'))]"
+      ],
+      "properties": {
+        "packageUri": "https://github.com/akashsingh-crest/akashvmray/raw/refs/heads/main/LogicApp/SubmitDefenderAlertsToVMRay-GCC.zip"
+      }
+    }
+  ],
+    "outputs": {
+      "logicAppSystemAssignedIdentityTenantId": {
+        "type": "string",
+        "value": "[subscription().tenantid]"
+      },
+      "logicAppSystemAssignedIdentityObjectId": {
+        "type": "string",
+        "value": "[reference(resourceId('Microsoft.Web/sites', parameters('logicAppName')),'2019-08-01', 'full').identity.principalId]"
+      },
+      "LAname": {
+        "type": "string",
+        "value": "[parameters('logicAppName')]"
+      }
+    }
+}
