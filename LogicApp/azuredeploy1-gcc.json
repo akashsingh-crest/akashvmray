@@ -160,7 +160,7 @@
                                     {
                                         "name": "time_window",
                                         "type": "string",
-                                        "value": "@{addMinutes(utcNow(), -6, 'yyyy-MM-ddTHH:mm:ssZ')}"
+                                        "value": "@{addMinutes(utcNow(), mul(add(parameters('PollingIntervalMinutes'), 1), -1), 'yyyy-MM-ddTHH:mm:ssZ')}"
                                     }
                                 ]
                             }
@@ -212,8 +212,7 @@
                             "runtimeConfiguration": {
                                 "secureData": {
                                     "properties": [
-                                        "inputs",
-                                        "outputs"
+                                        "inputs"
                                     ]
                                 }
                             }
