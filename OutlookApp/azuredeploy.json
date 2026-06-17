@@ -1,0 +1,186 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+
+  "parameters": {
+
+    "WebAppName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20,
+      "metadata": {
+        "description": "Name of the Azure Web App. It also forms the public domain URL used by the Outlook add-in."
+      }
+    },
+
+    "AzureClientID": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Azure Client Id that you have created during app registration."
+      }
+    },
+
+    "AzureClientSecret": {
+      "type": "securestring",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Azure Client Secret that you have created during creating the client secret."
+      }
+    },
+
+    "AzureTenantID": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Azure Tenant Id of your Azure Active Directory."
+      }
+    },
+
+    "Sku": {
+      "type": "string",
+      "defaultValue": "B1",
+      "allowedValues": [
+        "B1",
+        "B2",
+        "B3",
+        "S1",
+        "S2",
+        "S3",
+        "P1v3",
+        "P2v3"
+      ],
+      "metadata": {
+        "description": "App Service pricing tier. S1 and higher tiers are recommended for enterprise environments requiring higher performance and scalability."
+      }
+    },
+	
+	"Recipient": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Email address of the SOC or Incident Response mailbox where phishing emails will be reported."
+      }
+    },
+	
+	"MoveReportedPhishingEmailsToFolder": {
+	  "type": "string",
+	  "defaultValue": "false",
+	  "allowedValues": ["true", "false"],
+	  "metadata": {
+		"description": "Determines if reported phishing emails should be moved to a designated folder after reporting."
+	  }
+	}
+
+  },
+
+  "variables": {
+    "planName": "[concat(parameters('WebAppName'), '-plan')]",
+    "packageUrl": "https://github.com/akashsingh-crest/akashvmray/raw/main/OutlookApp/source.zip"
+  },
+
+  "resources": [
+  
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('planName')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "[parameters('Sku')]"
+      },
+      "kind": "linux",
+      "properties": {
+        "reserved": true
+      }
+    },
+
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-09-01",
+      "name": "[parameters('WebAppName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]"
+      ],
+      "properties": {
+
+        "httpsOnly": true,
+
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+
+        "siteConfig": {
+
+          "linuxFxVersion": "NODE|22-lts",
+          "alwaysOn": true
+        }
+      }
+    },
+
+    {
+      "comments": "App settings applied AFTER the Web App is created so APP_DOMAIN can use the actual defaultHostName Azure assigns (handles unique-default-hostname feature and sovereign clouds).",
+      "type": "Microsoft.Web/sites/config",
+      "apiVersion": "2022-09-01",
+      "name": "[concat(parameters('WebAppName'), '/appsettings')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('WebAppName'))]"
+      ],
+      "properties": {
+        "APP_DOMAIN": "[reference(resourceId('Microsoft.Web/sites', parameters('WebAppName'))).defaultHostName]",
+        "CLIENT_ID": "[parameters('AzureClientID')]",
+        "TENANT_ID": "[parameters('AzureTenantID')]",
+        "CLIENT_SECRET": "[parameters('AzureClientSecret')]",
+        "RECIPIENT": "[parameters('Recipient')]",
+        "MOVE_REPORTED_PHISHING_EMAILS_TO_FOLDER": "[parameters('MoveReportedPhishingEmailsToFolder')]",
+        "NODE_ENV": "production",
+        "SCM_DO_BUILD_DURING_DEPLOYMENT": "true"
+      }
+    },
+
+    {
+      "type": "Microsoft.Resources/deploymentScripts",
+      "apiVersion": "2020-10-01",
+      "name": "waitForWebApp",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites/config', parameters('WebAppName'), 'appsettings')]"
+      ],
+      "kind": "AzurePowerShell",
+      "properties": {
+        "azPowerShellVersion": "7.0",
+        "scriptContent": "Start-Sleep -Seconds 30",
+        "cleanupPreference": "Always",
+        "retentionInterval": "PT1H"
+      }
+    },
+
+    {
+      "type": "Microsoft.Web/sites/extensions",
+      "apiVersion": "2022-09-01",
+      "name": "[concat(parameters('WebAppName'), '/zipdeploy')]",
+      "dependsOn": [
+        "waitForWebApp"
+      ],
+      "properties": {
+        "packageUri": "[variables('packageUrl')]",
+        "type": "zip"
+      }
+    }
+
+  ],
+
+  "outputs": {
+    "WebAppURL": {
+      "type": "string",
+      "value": "[concat('https://', reference(resourceId('Microsoft.Web/sites', parameters('WebAppName'))).defaultHostName)]"
+    },
+    "ManifestURL": {
+      "type": "string",
+      "value": "[concat('https://', reference(resourceId('Microsoft.Web/sites', parameters('WebAppName'))).defaultHostName, '/manifest.xml')]"
+    },
+    "DiagnosticsURL": {
+      "type": "string",
+      "value": "[concat('https://', reference(resourceId('Microsoft.Web/sites', parameters('WebAppName'))).defaultHostName, '/diagnostics')]"
+    }
+  }
+}
