@@ -507,7 +507,9 @@ if (-not (Confirm-Action "Continue with this tenant + subscription?")) {
 # ===========================================================================
 # PHASE 1 - App Registration
 # ===========================================================================
-$skipPhase1 = $SkipSetup.IsPresent
+$skipPhase1              = $SkipSetup.IsPresent
+$consentDeferredToAdmin  = $false
+$deferredConsentUrl      = $null
 
 if ($skipPhase1) {
   Write-Phase "1" "App Registration - SKIPPED (--SkipSetup)"
@@ -664,56 +666,70 @@ else {
     Write-Host ""
     Write-Host "  Admin consent is REQUIRED before the add-in will work for users." -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  A Global Administrator must:" -ForegroundColor Yellow
-    Write-Host "    1. Open this URL:" -ForegroundColor Yellow
+    Write-Host "  Open this URL in a browser:" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "    $consentUrl" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "    2. Sign in as Global Admin." -ForegroundColor Yellow
-    Write-Host "    3. Click 'Accept'." -ForegroundColor Yellow
+    Write-Host "  Sign in as a user authorized to grant tenant-wide admin consent," -ForegroundColor Yellow
+    Write-Host "  and click 'Accept'." -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  After clicking Accept, you'll be redirected to the Azure portal home page." -ForegroundColor Gray
-    Write-Host "  That confirms consent was granted - return here and press ENTER." -ForegroundColor Gray
+    Write-Host "  After Accept, the browser redirects to the Azure portal home page" -ForegroundColor Gray
+    Write-Host "  (that's the confirmation that consent was granted)." -ForegroundColor Gray
     try { Start-Process $consentUrl -ErrorAction Stop | Out-Null } catch { }
 
-    Wait-ForEnter "Press ENTER once consent has been granted"
-
-    # Verify with retries - usually 10-30s, can take up to ~90s.
     Write-Host ""
-    $consentVerified = Wait-ForConsentToPropagate -AppIdToCheck $appClientId
+    $consentChoice = Read-Choice -Prompt "Consent step:" -Options @(
+      "Access granted - continue (verifies and waits up to 90s)",
+      "Skip - to be done manually later by an authorized admin"
+    ) -Default 1
 
-    # If verification failed after 90s, offer the user a recovery loop:
-    # most "first click didn't register" cases are fixed by clicking the
-    # consent URL again. Loop until verified, continue-anyway, or abort.
-    $continueWithoutConsent = $false
-    while (-not $consentVerified -and -not $continueWithoutConsent) {
+    if ($consentChoice -eq 2) {
       Write-Host ""
-      Write-Host "  WARNING: Consent verification didn't see all permissions granted after 90 seconds." -ForegroundColor Yellow
-      Write-Host "  Either propagation is unusually slow, OR the Accept click didn't actually register." -ForegroundColor Yellow
-      Write-Host "  Verify in Portal: Entra ID -> App Reg -> API permissions -> Status column." -ForegroundColor Gray
+      Write-Host "  Skipping consent verification. Forward the URL above to an authorized admin." -ForegroundColor Yellow
+      Write-Host "  Phases 2 and 3 will still run; the add-in will not work for end-users" -ForegroundColor Yellow
+      Write-Host "  until consent is granted." -ForegroundColor Yellow
+      $consentDeferredToAdmin = $true
+      $deferredConsentUrl     = $consentUrl
+    } else {
+      # Verify with retries - usually 10-30s, can take up to ~90s.
+      Write-Host ""
+      $consentVerified = Wait-ForConsentToPropagate -AppIdToCheck $appClientId
 
-      $recoveryChoice = Read-Choice -Prompt "What would you like to do?" -Options @(
-        "Re-open the consent URL and try again (recommended)",
-        "Continue with deployment anyway (add-in won't work until consent is fixed later)",
-        "Abort"
-      ) -Default 1
+      # If verification failed after 90s, offer the user a recovery loop:
+      # most "first click didn't register" cases are fixed by clicking the
+      # consent URL again. Loop until verified, continue-anyway, or abort.
+      $continueWithoutConsent = $false
+      while (-not $consentVerified -and -not $continueWithoutConsent) {
+        Write-Host ""
+        Write-Host "  WARNING: Consent verification didn't see all permissions granted after 90 seconds." -ForegroundColor Yellow
+        Write-Host "  Either propagation is unusually slow, OR the Accept click didn't actually register." -ForegroundColor Yellow
+        Write-Host "  Verify in Portal: Entra ID -> App Reg -> API permissions -> Status column." -ForegroundColor Gray
 
-      switch ($recoveryChoice) {
-        1 {
-          Write-Host ""
-          Write-Host "  Re-opening consent URL:" -ForegroundColor Cyan
-          Write-Host "    $consentUrl" -ForegroundColor Gray
-          Write-Host "  Tip: try an InPrivate / Incognito window, or sign out of other Microsoft accounts first." -ForegroundColor Gray
-          try { Start-Process $consentUrl -ErrorAction Stop | Out-Null } catch { }
-          Wait-ForEnter "After clicking Accept again, press ENTER"
-          $consentVerified = Wait-ForConsentToPropagate -AppIdToCheck $appClientId
-        }
-        2 {
-          Write-Host "  Continuing without verified consent. Add-in won't work until consent is granted manually." -ForegroundColor Yellow
-          $continueWithoutConsent = $true
-        }
-        3 {
-          throw "Aborted by user. Re-run after consent propagates."
+        $recoveryChoice = Read-Choice -Prompt "What would you like to do?" -Options @(
+          "Re-open the consent URL and try again (recommended)",
+          "Continue with deployment anyway (add-in won't work until consent is fixed later)",
+          "Abort"
+        ) -Default 1
+
+        switch ($recoveryChoice) {
+          1 {
+            Write-Host ""
+            Write-Host "  Re-opening consent URL:" -ForegroundColor Cyan
+            Write-Host "    $consentUrl" -ForegroundColor Gray
+            Write-Host "  Tip: try an InPrivate / Incognito window, or sign out of other Microsoft accounts first." -ForegroundColor Gray
+            try { Start-Process $consentUrl -ErrorAction Stop | Out-Null } catch { }
+            Wait-ForEnter "After clicking Accept again, press ENTER"
+            $consentVerified = Wait-ForConsentToPropagate -AppIdToCheck $appClientId
+          }
+          2 {
+            Write-Host "  Continuing without verified consent. Add-in won't work until consent is granted manually." -ForegroundColor Yellow
+            $continueWithoutConsent  = $true
+            $consentDeferredToAdmin  = $true
+            $deferredConsentUrl      = $consentUrl
+          }
+          3 {
+            throw "Aborted by user. Re-run after consent propagates."
+          }
         }
       }
     }
@@ -951,7 +967,18 @@ Write-Host ""
 Write-Host "  Diagnostics URL (verify deployment health):" -ForegroundColor Cyan
 Write-Host "    $diagnosticsUrl" -ForegroundColor White
 Write-Host ""
-Write-Host "  Next steps (manual - only 1 step left!):" -ForegroundColor Yellow
+
+if ($consentDeferredToAdmin) {
+  Write-Host "  !! ACTION REQUIRED - ADMIN CONSENT NOT YET GRANTED !!" -ForegroundColor Red
+  Write-Host "  Forward this URL to a user authorized to grant tenant-wide admin consent:" -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "    $deferredConsentUrl" -ForegroundColor Cyan
+  Write-Host ""
+  Write-Host "  The add-in will NOT work for end-users until they click Accept." -ForegroundColor Yellow
+  Write-Host ""
+}
+
+Write-Host "  Next steps (manual):" -ForegroundColor Yellow
 Write-Host "    1. Open the Manifest URL in a browser - saves manifest.xml" -ForegroundColor Yellow
 Write-Host "    2. Microsoft 365 Admin Center -> Integrated apps -> Deploy Add-in" -ForegroundColor Yellow
 Write-Host "       (or Update Add-in if a previous deployment exists)" -ForegroundColor Yellow
