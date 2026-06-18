@@ -45,13 +45,14 @@ The entire deployment is driven by a single PowerShell script that handles three
 | Phase | What it does | Manual? |
 |---|---|---|
 | **1. App Registration** | Creates the Azure AD App Registration, adds the required Microsoft Graph permissions, mints a client secret | Automated |
-| **1.5. Admin consent** | A Global Administrator must click a one-time URL to grant tenant-wide consent | **Manual click** |
+| **1.5. Admin consent** | A user authorized to grant tenant-wide consent clicks a one-time URL. The script can either verify consent immediately, or defer it (forward the URL to an admin later) and continue with the rest of the deployment. | **Manual click** (can be deferred) |
 | **2. Web App deployment** | Provisions the Azure Web App via an ARM template, configures environment variables | Automated |
 | **3. App Reg configuration** | Wires the App Registration to the deployed Web App's domain (Application ID URI, scope, redirect URIs, pre-authorization) | Automated |
 | **4. Manifest download** | Customer downloads a ready-to-upload `manifest.xml` from the deployed Web App | One browser click |
 | **5. M365 Admin Center upload** | Global Administrator uploads the manifest in M365 Admin Center to deploy to users | **Manual upload** |
 
-**Total customer-side effort: one PowerShell command + two Global Admin clicks + one file upload.**
+**Total customer-side effort: one PowerShell command + one admin-consent click + one manifest upload.**
+Phases 2 and 3 can run even if the script operator isn't authorized to grant consent themselves — they can choose **Skip** at the consent step and forward the URL to an admin afterwards. The add-in won't work for end-users until that click happens.
 
 ---
 
@@ -81,14 +82,14 @@ You'll be asked:
 
 | Prompt | What to enter |
 |---|---|
-| Confirm tenant + subscription | Press Enter to confirm (or N to abort and switch context) |
+| Confirm tenant + subscription | If only one subscription is accessible, press Enter to confirm. If multiple are accessible, the script offers a picker — choose 1 to use the current one, or 2 to pick a different one from the list. |
 | Create new or use existing App Registration? | Choose 1 (new) for a first-time deployment |
 | Display name for the new App Registration | Press Enter for default (`VMRay-Outlook-Addin-App`) |
-| **Open the printed consent URL → click Accept (Global Admin)** | (Manual step) |
-| Press Enter once consent is granted | After clicking Accept in the browser |
+| **Open the printed consent URL → sign in as someone authorized to grant tenant-wide consent → click Accept** | (Manual step) |
+| Consent step: `[1] Access granted - continue`  or  `[2] Skip - to be done manually later` | Choose **1** if consent was just granted (script verifies and waits up to 90s). Choose **2** if you're not authorized to grant it yourself — the script will continue without verifying, and the consent URL will be reprinted at the end for you to forward to an admin. |
 | Web App name (1-20 chars, alphanumeric+hyphens) | A globally unique name, e.g., `vmray-outlook-acme` |
 | Resource group name | Existing RG, or a new name (created if missing) |
-| Azure region | Press Enter for default (Central US) |
+| Azure region | **Only asked if the resource group is new.** If you reused an existing RG, the script auto-uses that RG's location. For new RGs, press Enter for the default (Central US) or type a closer region (e.g., `Central India`, `North Europe`). |
 | App Service SKU | Press Enter for default (S1) |
 | IR mailbox email address | Your VMRay IR mailbox, e.g., `xxx@us.ir-mailbox.vmray.com` |
 | Move reported emails to a folder? | Press Enter for default (No) |
@@ -207,14 +208,28 @@ If all of the above succeed, your deployment is fully working.
 
 ## Troubleshooting
 
+### Consent step — when to choose Skip
+
+When the consent URL is displayed, the script asks how to proceed:
+
+```
+Consent step:
+  [1] Access granted - continue (verifies and waits up to 90s)
+  [2] Skip - to be done manually later by an authorized admin
+```
+
+**Choose [1]** when you (or someone working with you in real time) just clicked Accept. The script then verifies the grant via Microsoft Graph and continues automatically once it sees all four permissions consented.
+
+**Choose [2]** when the script operator isn't authorized to grant tenant-wide consent. The script skips verification, runs Phases 2 and 3 (which don't need consent), and reprints the consent URL in the final summary so it can be forwarded to an admin afterwards. The add-in will not work for end-users until that click happens.
+
 ### "Consent verification didn't see all permissions granted"
 
-**What's happening:** After clicking Accept on the consent URL, Microsoft's grant database takes 10-90 seconds to propagate to the Graph API that the script uses to verify consent. The script retries for up to 90 seconds before showing this warning.
+**What's happening:** You chose option [1] above, but after clicking Accept, Microsoft's grant database takes 10-90 seconds to propagate to the Graph API that the script uses to verify consent. The script retries for up to 90 seconds before showing this warning.
 
 **What to do:** The script will offer three options:
 
 1. **Re-open the consent URL** — most common fix. Sometimes the first Accept click doesn't actually register (browser caching, multiple accounts signed in, etc.). Re-clicking usually works. **Tip:** open the URL in an InPrivate/Incognito window for the cleanest session.
-2. **Continue anyway** — script proceeds; consent must be granted manually later before users can use the add-in
+2. **Continue anyway** — script proceeds; consent must be granted manually later before users can use the add-in (same as choosing Skip up-front)
 3. **Abort** — bail out completely
 
 **Recommended:** choose option 1. If it still fails after several re-clicks, verify in Portal → Entra ID → App Registration → API permissions. Look for green checkmarks in the **Status** column.
@@ -238,35 +253,6 @@ https://login.microsoftonline.com/YOUR-TENANT-ID/adminconsent?client_id=YOUR-APP
 ```
 
 Click Accept. Wait 1-2 minutes for propagation. Have the user retry.
-
-### Manifest cache on Outlook doesn't update after manifest changes
-
-**What's happening:** Microsoft's M365 caches each tenant's add-in manifest aggressively. After uploading an updated manifest in M365 Admin Center, individual Outlook clients can take 5-30 minutes to refresh their cached copy (sometimes up to 24 hours).
-
-**To force a faster refresh:**
-1. Sign out of `outlook.office.com` completely
-2. Close all browser tabs
-3. Open a fresh InPrivate window
-4. Sign in again
-
-For Outlook desktop, close the application completely and reopen.
-
-If the manifest version was bumped (e.g., from `1.0.0.0` to `1.0.1.0`), Microsoft refreshes more aggressively than same-version updates.
-
-### Web App quota errors during deployment
-
-**Symptom:** ARM deployment fails with `SubscriptionIsOverQuotaForSku` or `Total VMs: 0`.
-
-**Why:** Some Azure subscriptions have zero default vCPU quota in unused regions.
-
-**Fix:** Pick a different region when the script prompts. Recommended alternatives:
-
-- Central US
-- East US 2
-- West US 2
-- North Europe
-
-Quotas are per-region — if one fails, try another.
 
 ### Script can't find the ARM template
 
