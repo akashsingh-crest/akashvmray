@@ -500,8 +500,37 @@ Write-Host ""
 Write-Host "  Tenant       : $tenantId" -ForegroundColor White
 Write-Host "  Subscription : $($azContext.Subscription.Name) ($($azContext.Subscription.Id))" -ForegroundColor White
 Write-Host ""
-if (-not (Confirm-Action "Continue with this tenant + subscription?")) {
-  throw "Aborted by user. Switch context (Connect-AzAccount / Connect-MgGraph) and retry."
+
+# Look up all subscriptions visible in this tenant so we can offer a picker
+# when the account has access to more than one. Silent fallback to the
+# current sub if the lookup fails (e.g. permissions issue).
+$allSubs = @()
+try {
+  $allSubs = @(Get-AzSubscription -TenantId $tenantId -ErrorAction Stop | Sort-Object Name)
+} catch {
+  $allSubs = @($azContext.Subscription)
+}
+
+if ($allSubs.Count -le 1) {
+  if (-not (Confirm-Action "Continue with this tenant + subscription?")) {
+    throw "Aborted by user. Switch context (Connect-AzAccount / Connect-MgGraph) and retry."
+  }
+} else {
+  Write-Host "  $($allSubs.Count) subscriptions are accessible in this tenant." -ForegroundColor Gray
+  $subChoice = Read-Choice -Prompt "How do you want to handle the subscription?" -Options @(
+    "Use the current subscription shown above",
+    "Switch to a different subscription"
+  ) -Default 1
+
+  if ($subChoice -eq 2) {
+    $subOptions = @($allSubs | ForEach-Object { "$($_.Name) ($($_.Id))" })
+    $picked = Read-Choice -Prompt "Pick a subscription:" -Options $subOptions -Default 1
+    $chosenSub = $allSubs[$picked - 1]
+    Set-AzContext -SubscriptionId $chosenSub.Id -TenantId $tenantId | Out-Null
+    $azContext = Get-AzContext
+    Write-Host ""
+    Write-Host "  Now using: $($azContext.Subscription.Name) ($($azContext.Subscription.Id))" -ForegroundColor Green
+  }
 }
 
 # ===========================================================================
