@@ -788,8 +788,18 @@ else {
     $ResourceGroup = Read-Text -Prompt "Resource group name (will be created if it doesn't exist)"
   }
 
+  # If the RG already exists, reuse its location so the Web App lands in the
+  # same region as the rest of the customer's infrastructure. Only prompt for
+  # a region when the RG is new (or when -Region was passed explicitly).
   if (-not $PSBoundParameters.ContainsKey('Region')) {
-    $Region = Read-Text -Prompt "Azure region" -Default $Region
+    $existingRg = Get-AzResourceGroup -Name $ResourceGroup -ErrorAction SilentlyContinue
+    if ($existingRg) {
+      $Region = $existingRg.Location
+      Write-Host ""
+      Write-Host "  Using existing RG location: $Region" -ForegroundColor Green
+    } else {
+      $Region = Read-Text -Prompt "Azure region" -Default $Region
+    }
   }
 
   if (-not $PSBoundParameters.ContainsKey('Sku')) {
