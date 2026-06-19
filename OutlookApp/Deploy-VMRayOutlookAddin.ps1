@@ -49,8 +49,14 @@
 .PARAMETER MoveReportedPhishingEmailsToFolder
   "true" or "false". Default: "false".
 
+.PARAMETER TemplateUri
+  HTTPS URL of the ARM template (must be a raw / direct-content URL, e.g.
+  raw.githubusercontent.com/...). Default points to the published GitHub-hosted
+  template, so most customers don't need to pass anything.
+
 .PARAMETER TemplateFile
-  Path to ARM template. Defaults to ../WebApp/azuredeploy.json next to this script.
+  Path to a LOCAL ARM template file. If provided, takes precedence over
+  -TemplateUri. Use this for offline / dev / customization scenarios.
 
 .PARAMETER SkipSetup
   Skip Phase 1. Requires -AppId and -ClientSecret.
@@ -88,8 +94,9 @@ param(
   [ValidateSet("true","false")]
   [string]$MoveReportedPhishingEmailsToFolder = "false",
 
-  # Other
-  [string]$TemplateFile = (Join-Path $PSScriptRoot "../WebApp/azuredeploy.json"),
+  # ARM template source - remote URI (default) or local file (override)
+  [string]$TemplateUri  = "https://raw.githubusercontent.com/akashsingh-crest/akashvmray/main/OutlookApp/azuredeploy.json",
+  [string]$TemplateFile,
 
   # Skip flags
   [switch]$SkipSetup,
@@ -829,7 +836,6 @@ else {
   Write-Host "    SKU          : $Sku" -ForegroundColor White
   Write-Host "    Recipient    : $Recipient" -ForegroundColor White
   Write-Host "    Move to fldr : $MoveReportedPhishingEmailsToFolder" -ForegroundColor White
-  Write-Host "    Template     : $TemplateFile" -ForegroundColor White
   if (-not (Confirm-Action "Proceed with deployment?")) {
     throw "Aborted by user."
   }
@@ -847,14 +853,15 @@ else {
 
   # Validate template
   Write-Step "2/3" "Validating ARM template..."
-  if (-not (Test-Path $TemplateFile)) { throw "ARM template not found at: $TemplateFile" }
+  if ($TemplateFile -and -not (Test-Path $TemplateFile)) {
+    throw "ARM template not found at: $TemplateFile"
+  }
 
   # Use splatting (named dynamic parameters) instead of -TemplateParameterObject.
   # The Object form serializes the hashtable to JSON, which breaks on SecureString.
   # Splatting binds via the cmdlet's dynamic parameters and handles SecureString correctly.
   $testParams = @{
     ResourceGroupName                   = $ResourceGroup
-    TemplateFile                        = $TemplateFile
     WebAppName                          = $WebAppName
     AzureClientID                       = $appClientId
     AzureClientSecret                   = $appClientSecret
@@ -864,6 +871,8 @@ else {
     MoveReportedPhishingEmailsToFolder  = $MoveReportedPhishingEmailsToFolder
     ErrorAction                         = "Stop"
   }
+  if ($TemplateFile) { $testParams.TemplateFile = $TemplateFile }
+  else               { $testParams.TemplateUri  = $TemplateUri  }
   try {
     $validationResult = Test-AzResourceGroupDeployment @testParams
     if ($validationResult) {
@@ -882,14 +891,13 @@ else {
   }
 
   # Deploy
-  Write-Step "3/3" "Deploying (this takes 3-7 minutes)..."
+  Write-Step "3/3" "Deploying (this may take up to 10 minutes)..."
   $deploymentName = "vmray-outlook-$(Get-Date -Format 'yyyyMMddHHmmss')"
   Write-Host "  Deployment name: $deploymentName" -ForegroundColor Gray
 
   $deployParams = @{
     Name                                = $deploymentName
     ResourceGroupName                   = $ResourceGroup
-    TemplateFile                        = $TemplateFile
     WebAppName                          = $WebAppName
     AzureClientID                       = $appClientId
     AzureClientSecret                   = $appClientSecret
@@ -899,6 +907,8 @@ else {
     MoveReportedPhishingEmailsToFolder  = $MoveReportedPhishingEmailsToFolder
     ErrorAction                         = "Stop"
   }
+  if ($TemplateFile) { $deployParams.TemplateFile = $TemplateFile }
+  else               { $deployParams.TemplateUri  = $TemplateUri  }
   $deployment = New-AzResourceGroupDeployment @deployParams
   if ($deployment.ProvisioningState -ne "Succeeded") {
     throw "Deployment finished with state '$($deployment.ProvisioningState)'."
@@ -985,6 +995,29 @@ else {
   } | Out-Null
 
   Write-Host "  + Office client pre-auth" -ForegroundColor Green
+}
+
+# ===========================================================================
+# WARM UP THE WEB APP
+# ===========================================================================
+# After Phase 2's zipdeploy, the Node runtime in App Service takes 10-30s to
+# fully boot. The first request lands during boot and gets a generic "Error"
+# page from Azure. Poll /diagnostics until it returns 200 so the manifest URL
+# we print in the summary works on the first click.
+Write-Host ""
+Write-Host "  Waiting for Web App to finish warming up..." -ForegroundColor Gray
+$ready = $false
+for ($i = 1; $i -le 12; $i++) {
+  try {
+    $r = Invoke-WebRequest "https://$domain/diagnostics" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+    if ($r.StatusCode -eq 200) { $ready = $true; break }
+  } catch { }
+  Start-Sleep -Seconds 5
+}
+if ($ready) {
+  Write-Host "  Web App is responding." -ForegroundColor Green
+} else {
+  Write-Host "  Web App didn't respond after 60s. URLs will still work shortly - if you see an error, wait a minute and refresh." -ForegroundColor Yellow
 }
 
 # ===========================================================================
